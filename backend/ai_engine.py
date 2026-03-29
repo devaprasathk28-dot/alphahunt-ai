@@ -1,11 +1,11 @@
 from typing import Any
 from groq import Groq
 import os
+from dotenv import load_dotenv
 
+load_dotenv()
 
-
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))  # Load from .env
-
+client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 
 def generate_ai_explanation(signal_data: dict[str, Any]) -> str:
@@ -33,7 +33,7 @@ Provide detailed analysis and recommendation (200-300 words)."""
 
 def chat_with_ai(messages, temperature=0.7, max_tokens=500, context_data=""):
     try:
-        prompt = f"Stock context: {context_data[:300]}\nUser query: {messages[-1]['content']}"
+        prompt = f"Stock context: {context_data[:300]}\\nUser query: {messages[-1]['content']}"
         response = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=messages,

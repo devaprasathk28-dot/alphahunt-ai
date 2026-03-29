@@ -78,8 +78,8 @@ class SupportResistanceAnalyzer:
         df = self._validate_df(df)
         peaks, troughs = self.identify_peaks_and_troughs(df, distance)
         
-        highs = df['Close'].iloc[peaks].values if len(peaks) > 0 else np.array([])
-        lows = df['Close'].iloc[troughs].values if len(troughs) > 0 else np.array([])
+        high_series = df['Close'].iloc[peaks]\n        highs = np.asarray(high_series) if len(peaks) > 0 else np.array([])
+        low_series = df['Close'].iloc[troughs]\n        lows = np.asarray(low_series) if len(troughs) > 0 else np.array([])
 
         highs = highs[~np.isnan(highs)] if len(highs) > 0 else np.array([])
         lows = lows[~np.isnan(lows)] if len(lows) > 0 else np.array([])

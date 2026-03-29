@@ -20,10 +20,38 @@ def calculate_rsi(df, window=14):
 
     return rsi
 
+# -----------------------------
+# NEW FUNCTIONS FOR FIXES
+# -----------------------------
+
+def market_status(ticker):
+    """Global market status - India/US"""
+    from datetime import datetime
+    now = datetime.utcnow()
+    
+    if ".NS" in ticker:
+        # India NSE: 3:30-10:00 UTC (9:00-15:30 IST)
+        return "OPEN" if 3 <= now.hour < 10 else "CLOSED"
+    else:
+        # US: 14:30-21:00 UTC (9:30-16:00 EST)
+        return "OPEN" if 14 <= now.hour < 21 else "CLOSED"
+
+def role_reversal(price, support, resistance):
+    """Advanced role reversal detection"""
+    if price > resistance:
+        return "Resistance → Support"
+    elif price < support:
+        return "Support → Resistance"
+    return "No role reversal"
+
 
 # -----------------------------
-# SUPPORT & RESISTANCE (NEW)
+# SUPPORT & RESISTANCE 
 # -----------------------------
+def support_resistance(df):
+    """Alias for UI usage"""
+    return get_support_resistance(df)
+
 def get_support_resistance(df):
     if len(df) < 20:
         return None, None
@@ -38,8 +66,7 @@ def get_support_resistance(df):
 # SIGNAL GENERATION (FINAL)
 # -----------------------------
 def generate_signal(df):
-
-    if df is None or df.empty or len(df) < 20:
+    if df is None or df.empty or len(df) < 50:
         return {
             "signal": "HOLD",
             "reason": "Not enough data",
@@ -48,48 +75,39 @@ def generate_signal(df):
 
     df = df.copy()
 
-    # RSI
+    # Calculate indicators
     df["RSI"] = calculate_rsi(df)
-
-    latest = df.iloc[-1]
-
-    rsi = latest["RSI"]
-    price = latest["Close"]
-
-    # Support / Resistance
+    df["MA20"] = df["Close"].rolling(20).mean()
+    df["MA50"] = df["Close"].rolling(50).mean()
     support, resistance = get_support_resistance(df)
 
+    latest = df.iloc[-1]
+    price = latest["Close"]
+    ma20 = latest["MA20"]
+    ma50 = latest["MA50"]
+    rsi = latest["RSI"]
+
     signal = "HOLD"
-    reason = "Neutral condition"
+    reason = "Neutral conditions"
     confidence = "Medium"
 
-    # -----------------------------
-    # STRONG BUY CONDITIONS
-    # -----------------------------
-    if rsi is not None:
-        if rsi < 30:
-            signal = "BUY"
-            reason = "Oversold (RSI < 30)"
-            confidence = "High"
-
-        elif price > resistance:
-            signal = "BUY"
-            reason = "Breakout above resistance"
-            confidence = "High"
-
-    # -----------------------------
-    # STRONG SELL CONDITIONS
-    # -----------------------------
-    if rsi is not None:
-        if rsi > 70:
-            signal = "SELL"
-            reason = "Overbought (RSI > 70)"
-            confidence = "High"
-
-        elif price < support:
-            signal = "SELL"
-            reason = "Breakdown below support"
-            confidence = "High"
+    # Improved MA-based signals (fixes 0 signals issue)
+    if price > ma20 and ma20 > ma50:
+        signal = "BUY"
+        reason = "Bullish trend (Price > MA20 > MA50)"
+        confidence = "High"
+    elif price < ma20 and ma20 < ma50:
+        signal = "SELL"
+        reason = "Bearish trend (Price < MA20 < MA50)"
+        confidence = "High"
+    elif rsi < 30:
+        signal = "BUY"
+        reason = "Oversold RSI"
+        confidence = "Medium"
+    elif rsi > 70:
+        signal = "SELL"
+        reason = "Overbought RSI"
+        confidence = "Medium"
 
     return {
         "signal": signal,
@@ -97,5 +115,7 @@ def generate_signal(df):
         "confidence": confidence,
         "rsi": float(rsi) if rsi is not None else None,
         "support": float(support) if support else None,
-        "resistance": float(resistance) if resistance else None
+        "resistance": float(resistance) if resistance else None,
+        "ma20": float(ma20),
+        "ma50": float(ma50)
     }

@@ -22,7 +22,7 @@ def get_stock_data(symbol="RELIANCE.NS", period="3mo"):
     
     try:
         ticker = yf.Ticker(symbol)
-        df = ticker.history(period=period)
+        df = ticker.history(period=period, interval="1h")
         
         if df.empty:
             print(f"No data for {symbol} ({period}): empty dataframe")

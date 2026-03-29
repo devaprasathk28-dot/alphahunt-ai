@@ -9,7 +9,10 @@ from backend.ai_engine import generate_ai_explanation, chat_with_ai
 from backend.backtest import backtest_stock
 from backend.auth import login, signup
 from backend.news_service import get_news, get_sentiment
+import plotly.express as px
+import io
 from backend.auth import login, signup, get_user, update_profile, load_user_chats, save_user_chats
+from backend.signal_engine import support_resistance, market_status, role_reversal
 from collections import Counter
 import plotly.graph_objects as go
 import datetime
@@ -195,13 +198,12 @@ elif st.session_state.page == "dashboard":
             st.rerun()
 
     st.sidebar.title("📊 S/R Lines")
-    show_support = st.sidebar.toggle("🟢 Show Support Lines (Green)", value=True)
-    show_resistance = st.sidebar.toggle("🔴 Show Resistance Lines (Red)", value=True)
-    apply_role_reversal = st.sidebar.toggle("🔄 Role Reversal", value=False, disabled=not (show_support and show_resistance))
+    show_sr = st.sidebar.toggle("Show Support/Resistance", value=True)
+    apply_role_reversal = st.sidebar.toggle("🔄 Role Reversal", value=False, disabled=not show_sr)
 
     # Cache key for dashboard results
     stocks_tuple = tuple(st.session_state.selected_stocks)
-    settings_hash = hash((stocks_tuple, show_support, show_resistance))
+    settings_hash = hash((stocks_tuple, show_sr, apply_role_reversal))
 
     # Old refresh button removed - enhanced version added in header
 
@@ -360,12 +362,13 @@ elif st.session_state.page == "dashboard":
 
                     fig.add_trace(go.Scatter(x=data_chart.index, y=data_chart['Close'], mode='lines', name='Close Price', line=dict(color='blue')))
 
-                    if r.get('support'):
-                        fig.add_hline(y=r['support'], line_dash="dash", line_color="green", annotation_text="Support")
-                    if r.get('resistance'):
-                        fig.add_hline(y=r['resistance'], line_dash="dash", line_color="red", annotation_text="Resistance")
+                    if show_sr:
+                        if r.get('support'):
+                            fig.add_hline(y=r['support'], line_dash="dash", line_color="green", annotation_text="Support")
+                        if r.get('resistance'):
+                            fig.add_hline(y=r['resistance'], line_dash="dash", line_color="red", annotation_text="Resistance")
                     fig.update_layout(
-                        title=f'{stock_id} Chart ({selected_period}) | S:{len(r.get("supports",[]))} R:{len(r.get("resistances",[]))}' + (' + S/R Lines' if show_support or show_resistance else ''),
+                        title=f'{stock_id} Chart ({selected_period}) | S:{len(r.get("supports",[]))} R:{len(r.get("resistances",[]))}' + (' + S/R Lines' if show_sr else ''),
                         xaxis_title='Date',
                         yaxis_title='Price',
                         showlegend=True
@@ -388,102 +391,83 @@ elif st.session_state.page == "dashboard":
     with tab2: # type: ignore
         st.subheader("💼 Portfolio Analysis")
 
-        portfolio_input = st.text_input("Enter stocks (comma separated)", "tcs,sbin")
+        portfolio_input = st.text_input("Enter stocks (comma separated): e.g. RELIANCE.NS,AAPL", "tcs,sbin")
 
-        if st.button("Analyze Portfolio"):
-            raw_stocks = [s.strip() for s in portfolio_input.split(",")]            
+        if st.button("🚀 Analyze Multi-Stock Portfolio & Signals"):
+            raw_stocks = [s.strip() for s in portfolio_input.split(",")]
             
-            # Refactored to be more efficient and clear for static analysis.
-            # This avoids calling normalize_stock twice and makes it explicit
-            # that the 'stocks' list will not contain None values.
             stocks = []
             for s_raw in raw_stocks:
                 normalized = find_stock(s_raw)
                 if normalized:
                     stocks.append(normalized)
-            sectors = []
+            
+            if not stocks:
+                st.warning("No valid stocks found.")
+                sector_count = Counter()
+            else:
+                sector_count = Counter()
+                
+                # Enhanced multi-stock display (Fix #7)
+                for stock in stocks:
+                    with st.expander(f"📊 {stock}"):
+                        df = get_stock_data(stock)
+                        if df is None or isinstance(df, dict) or (hasattr(df, 'empty') and df.empty):
+                            st.error(f"{stock}: No live data")
+                            continue
+                        
+                        st.write(f"**Price:** {df['Close'].iloc[-1]:.2f}")
+                        
+                        status = market_status(stock)
+                        st.write(f"**Market:** {status}")
+                        
+                        signal = generate_signal(df)
+                        st.success(f"Signal: {signal['signal']} | Reason: {signal['reason']}")
+                        
+                        support, resistance = support_resistance(df)
+                        st.write(f"**Support:** {support:.2f} | **Resistance:** {resistance:.2f}")
+                        
+                        reversal = role_reversal(df['Close'].iloc[-1], support, resistance)
+                        st.write(f"**Role Reversal:** {reversal}")
+                    
+                    # Update sector map for risk analysis
+                    sector = st.session_state.sector_map.get(stock, "Unknown")
+                    if sector == "Unknown":
+                        try:
+                            ticker_obj = yf.Ticker(stock)
+                            info = ticker_obj.info
+                            sector = info.get('sector') or info.get('industry') or "Unknown"
+                            st.session_state.sector_map[stock] = sector
+                        except:
+                            sector = "Unknown"
+                    sector_count[sector] += 1
 
-            for s in stocks:
-                sector = st.session_state.sector_map.get(s, "Unknown")
-                # Dynamically fetch sector if not in hardcoded map
-                if sector == "Unknown":
-                    try:
-                        ticker = yf.Ticker(s)
-                        info = ticker.info
-                        if 'sector' in info and info['sector']:
-                            sector = info['sector']
-                            st.session_state.sector_map[s] = sector  # Update session state map
-                        elif 'industry' in info and info['industry']:  # Fallback to industry if sector is not available
-                            sector = info['industry']
-                            st.session_state.sector_map[s] = sector  # Update session state map
-                    except Exception:
-                        sector = "Unknown (API Error)"
-                sectors.append(sector)
-
-            # Clean summary display (no spam)
-            if stocks:
-                df_display = pd.DataFrame({
-                    "Stock": stocks,
-                    "Sector": sectors
-                })
+                # Portfolio table
+                sectors_list = [st.session_state.sector_map.get(s, "Unknown") for s in stocks]
+                df_display = pd.DataFrame({"Stock": stocks, "Sector": sectors_list})
                 st.dataframe(df_display, use_container_width=True, hide_index=True)
-            else:
-                st.warning("No valid stocks entered.")
 
-            sector_count = Counter(sectors)
+                st.subheader("⚠️ Risk Analysis")
+                for sec, count in sector_count.items():
+                    if count > 1:
+                        st.warning(f"High exposure: {sec} ({count})")
 
-            st.subheader("⚠️ Risk Analysis")
+                risk_score = min(10, len(stocks)*0.5 + (sum(c*2 for c in list(sector_count.values()) if c>1) if isinstance(sector_count, dict) else 0) + (3 if len(sector_count)<=2 else 0))
+                st.metric("Risk Score", f"{risk_score:.1f}/10")
 
-            for sec, count in sector_count.items():
-                if count > 1:
-                    st.warning(f"High exposure in {sec} sector ({count} stocks)")
-
-            st.subheader("📊 Portfolio Risk Score")
-
-            risk_score = 0
-
-            # 1. Sector concentration
-            for sec, count in sector_count.items():
-                if count > 1:
-                    risk_score += count * 2
-
-            # 2. Too few sectors = risky
-            if len(sector_count) <= 2:
-                risk_score += 3
-
-            # 3. Number of stocks (more = more complex risk)
-            risk_score += len(stocks) * 0.5
-
-            # Normalize (0–10)
-            risk_score = min(risk_score, 10)
-
-            st.metric("Risk Score", f"{risk_score}/10")
-
-            if risk_score <= 3:
-                st.success("Low Risk Portfolio")
-            elif risk_score <= 6:
-                st.warning("Moderate Risk Portfolio")
-            else:
-                st.error("High Risk Portfolio")
-
-            st.subheader("💡 AI Suggestions")
-
-            suggestions = []
-
-            if "Banking" in sector_count and sector_count["Banking"] > 1:
-                suggestions.append("Reduce exposure to Banking sector")
-
-            if "IT" not in sector_count:
-                suggestions.append("Consider adding IT sector for diversification")
-
-            if len(sector_count) <= 2:
-                suggestions.append("Diversify across more sectors")
-
-            if len(suggestions) == 0:
-                st.success("Portfolio looks well balanced")
-            else:
-                for s in suggestions:
-                    st.info(f"👉 {s}")
+                st.subheader("💡 AI Suggestions")
+                suggestions = []
+                if "Banking" in sector_count and sector_count["Banking"] > 1:
+                    suggestions.append("Reduce exposure to Banking sector")
+                if "IT" not in sector_count:
+                    suggestions.append("Consider adding IT sector for diversification")
+                if len(sector_count) <= 2:
+                    suggestions.append("Diversify across more sectors")
+                if len(suggestions) == 0:
+                    st.success("Portfolio looks well balanced")
+                else:
+                    for s in suggestions:
+                        st.info(f"👉 {s}")
 
             st.subheader("🤖 Pro AI Advice")
 
@@ -620,86 +604,148 @@ Reason: {r['reason']}
         
         stock = st.selectbox("Select stock", st.session_state.selected_stocks, key="backtest_stock")
         
-        col1, col2 = st.columns(2)
+        col1, col2, col3, col4 = st.columns(4)
         stock = col1.selectbox("Stock", st.session_state.selected_stocks)
         period = col2.selectbox("Period", ["3mo", "6mo", "1y"])
+        lookforward_days = col3.slider("Lookforward Days", 5, 20, 10, key="lf_days")
+        win_threshold_pct = col4.slider("Win Threshold %", 0.5, 3.0, 1.5, 0.1, key="win_thresh")
         
-        if st.button("🚀 Run Backtest", key="run_backtest"):
+        if st.button("🚀 Run Enhanced Backtest", key="run_backtest"):
             with st.spinner(f"Backtesting {stock} ({period})..."):
-                result = backtest_stock(stock, period)
+                result = backtest_stock(stock, period, lookforward_days, win_threshold_pct)
             
-            st.success("✅ Backtest Complete!")
+            st.success("✅ Enhanced Backtest Complete!")
             
-            col1, col2, col3 = st.columns(3)
+            # 1. KEY METRICS EXPANDED
+            col1, col2, col3, col4, col5, col6 = st.columns(6)
             buy_acc = result.get('buy_accuracy', 0)
             sell_acc = result.get('sell_accuracy', 0)
+            hold_acc = result.get('hold_accuracy', 100)
             col1.metric("🟢 BUY Win Rate", f"{buy_acc:.1f}%")
             col2.metric("🔴 SELL Win Rate", f"{sell_acc:.1f}%")
-            col3.metric("Total Signals", result.get('total_buy', 0) + result.get('total_sell', 0))
+            col3.metric("🟡 HOLD Win Rate", f"{hold_acc:.1f}%")
+            col4.metric("📈 Total Return", f"{result.get('total_return_pct', 0):.1f}%")
+            col5.metric("⚡ Sharpe Ratio", f"{result.get('sharpe_ratio', 0):.2f}")
+            col6.metric("📉 Max Drawdown", f"{result.get('max_drawdown_pct', 0):.1f}%")
             
-            signal_counts = result.get('signal_counts', {})
-            st.caption(f"BUY: {result.get('wins_buy', 0)}/{result.get('total_buy', 0)} | SELL: {result.get('wins_sell', 0)}/{result.get('total_sell', 0)}")
-            st.json(signal_counts)
+            # 2. EQUITY CURVE
+            fig_curve = go.Figure()
+            equity_curve = result.get('equity_curve', [10000])
+            safe_len_curve = len(equity_curve) if isinstance(equity_curve, (list, tuple)) else 1
+            x_range = list(range(safe_len_curve))
+            fig_curve.add_trace(go.Scatter(x=x_range, y=equity_curve, mode='lines', name='Strategy Equity', line=dict(color='#00FFAA', width=3)))
             
-            if buy_acc > 60:
+# Buy-hold benchmark - FULL type safe
+            signals_data = result.get('signals_df', [])
+            if isinstance(signals_data, list) and len(signals_data) > 0:
+                first_entry = signals_data[0]
+                if isinstance(first_entry, dict):
+                    entry_price = first_entry.get('entry_price', 1.0)
+                    bh_prices = [10000 * (entry_price / (p.get('entry_price', 1.0) or 1.0)) for p in signals_data if isinstance(p, dict)]
+                else:
+                    bh_prices = [10000]
+            else:
+                bh_prices = [10000]
+            safe_len_curve = len(equity_curve) if isinstance(equity_curve, (list, tuple)) else 1
+            bh_prices = [10000.0] * safe_len_curve
+            fig_curve.add_trace(go.Scatter(x=x_range, y=bh_prices, mode='lines', name='Buy & Hold', line=dict(color='orange', width=2)))
+            
+            fig_curve.update_layout(title="📈 Equity Curve vs Buy & Hold", xaxis_title="Trades", yaxis_title="$ Equity", height=400)
+            st.plotly_chart(fig_curve, use_container_width=True)
+            
+            # 3. SIGNAL DISTRIBUTION PIE - FIXED syntax + type safety
+            signal_counts = result.get('signal_counts', {}) or {}
+            if isinstance(signal_counts, dict) and signal_counts:
+                pie_df = pd.DataFrame(list(signal_counts.items()), columns=['Signal', 'Count'])
+                fig_pie = px.pie(pie_df, names='Signal', values='Count', title="Signal Distribution")
+                st.plotly_chart(fig_pie, use_container_width=True)
+            else:
+                st.info("No signal distribution data available.")
+            
+            # 4. PERFORMANCE TABLE - FIXED type safety
+            total_signals = sum(signal_counts.values()) if isinstance(signal_counts, dict) else 0
+            perf_data = {
+                'Metric': ['BUY Win Rate', 'SELL Win Rate', 'HOLD Win Rate', 'Total Signals', 'Total Return', 'Sharpe', 'Max DD', 'Profit Factor'],
+                'Value': [f"{buy_acc:.1f}%", f"{sell_acc:.1f}%", f"{hold_acc:.1f}%", 
+                         total_signals, f"{result.get("total_return_pct", 0):.1f}%",
+                         f"{result.get("sharpe_ratio", 0):.2f}", f"{result.get("max_drawdown_pct", 0):.1f}%", "N/A"]
+            }
+            st.dataframe(pd.DataFrame(perf_data), use_container_width=True)
+            
+            # 5. TOP SIGNALS TABLE - FIXED column validation
+            signals_data = result.get('signals_df', [])
+            if isinstance(signals_data, list):
+                signals_df = pd.DataFrame(signals_data)
+            else:
+                signals_df = pd.DataFrame()
+            if not signals_df.empty and 'return_pct' in signals_df.columns and 'timestamp' in signals_df.columns:
+                signals_df['datetime'] = pd.to_datetime(signals_df['timestamp'])
+                top_signals = signals_df.nlargest(10, 'return_pct')[['datetime', 'signal', 'entry_price', 'return_pct', 'win']]
+                st.data_editor(top_signals.rename(columns={'datetime': 'Date', 'entry_price': 'Entry $', 'return_pct': 'Return %', 'win': 'Win'}), 
+                              use_container_width=True, hide_index=False)
+            else:
+                st.info("No valid signals data available for table.")
+            
+            # 6. CSV EXPORT - FIXED empty handling
+            if not signals_df.empty:
+                csv_buffer = io.StringIO()
+                signals_df.to_csv(csv_buffer, index=False)
+                st.download_button("📥 Download Signals CSV", csv_buffer.getvalue(), f"{stock}_backtest.csv", "text/csv")
+            else:
+                st.info("No signals data to export.")
+            
+            # Performance Rating
+            if buy_acc > 60 or result.get('total_return_pct', 0) > 10:
                 st.balloons()
-                st.balloons()
-                st.success("🎉 EXCELLENT - Profitable!")
+                st.success("🎉 STRATEGY EXCELLENT - Deploy Live!")
             elif buy_acc > 50:
-                st.success("✅ Good performance")
+                st.success("✅ Good - Fine-tune params")
             else:
-                st.warning("⚠️ Review strategy")
-        else:
-            if stock:
-                st.info(f"👆 Click 'Run Backtest' for {stock}")
-            else:
-                st.info("👆 Select stock first")
+                st.info("⚠️ Needs strategy review")
     
     # ============== TAB 5: LIVE MARKET ==============
     with tab5: # type: ignore
-        st.subheader("📡 Live Market Analysis")
+        st.subheader("📡 Live Market Analysis - FIXED MULTI-TICKER")
         
-        live_stock = st.text_input("Enter ticker for live analysis (e.g. AAPL, RELIANCE.NS)", key="live_input")
+        live_input = st.text_input("Enter tickers (comma sep): e.g. RELIANCE.NS,AAPL", value="RELIANCE.NS", key="live_input")
         
-        if live_stock:
-            with st.spinner(f"Analyzing {live_stock} live..."):
-                # Get live data
-                live_hist = get_chart_data(live_stock, "1d")
-                data_result = get_stock_data(live_stock)
-                
-                if not live_hist.empty:
-                    fig = go.Figure()
-                    fig.add_trace(go.Scatter(x=live_hist.index, y=live_hist['Close'], mode='lines', name='Live Price'))
-                    fig.update_layout(title=f"{live_stock} Live Chart", height=400)
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    latest_price = live_hist['Close'].iloc[-1]
-                    st.metric("Current Price", latest_price)
-                else:
-                    st.warning("No live data available")
-                
-                # Signal analysis
-                if isinstance(data_result, pd.DataFrame):
-                    signal = generate_signal(data_result)
-                    st.markdown(f"""
-### 📊 Signal: {signal['signal']}
-Reason: {signal['reason']}  
-Confidence: {signal['confidence']}  
-
-RSI: {signal['rsi']}  
-Support: {signal['support']}  
-Resistance: {signal['resistance']}  
-""")
-                    
-                    # News & AI reasoning
-                    headlines = get_news(live_stock, 3)
-                    sentiment = get_sentiment(headlines)
-                    st.caption(f"News Sentiment: {sentiment}")
-                    
-                    ai_reason = generate_ai_explanation({**signal, 'stock': live_stock, 'news_sentiment': sentiment})
-                    with st.expander("🤖 AI Reasoning"):
-                        st.markdown(ai_reason)
-                else:
-                    st.error("Could not analyze - invalid ticker?")
-        else:
-            st.info("👆 Enter a ticker to get live analysis")
+        if live_input:
+            tickers = [t.strip() for t in live_input.split(",")]
+            
+            for ticker in tickers:
+                with st.expander(f"📈 {ticker}"):
+                    with st.spinner(f"Analyzing {ticker}..."):
+                        df = get_stock_data(ticker)
+                        
+                        if df is None or isinstance(df, dict) or (hasattr(df, 'empty') and df.empty):
+                            st.error(f"{ticker}: No data available")
+                            continue
+                        
+                        st.write(f"**Price:** {df['Close'].iloc[-1]:.2f}")
+                        
+                        signal = generate_signal(df)
+                        st.success(f"**Signal:** {signal['signal']} ({signal['confidence']})")
+                        st.write(f"**Reason:** {signal['reason']}")
+                        
+                        support, resistance = support_resistance(df)
+                        st.write(f"**Support:** {support:.2f}")
+                        st.write(f"**Resistance:** {resistance:.2f}")
+                        
+                        price = df['Close'].iloc[-1]
+                        reversal = role_reversal(price, support, resistance)
+                        st.write(f"**Role Reversal:** {reversal}")
+                        
+                        status = market_status(ticker)
+                        st.write(f"**Market Status:** {status}")
+                        
+                        # Chart
+                        chart_data = get_chart_data(ticker, "5d")
+                        if not chart_data.empty:
+                            fig = go.Figure()
+                            fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['Close'], mode='lines', name='Close'))
+                            fig.add_hline(y=support, line_dash="dash", line_color="green", annotation_text="Support")
+                            fig.add_hline(y=resistance, line_dash="dash", line_color="red", annotation_text="Resistance")
+                            fig.update_layout(title=f"{ticker} Chart", height=300)
+                            st.plotly_chart(fig, use_container_width=True)
+                        
+                        st.markdown("---")
