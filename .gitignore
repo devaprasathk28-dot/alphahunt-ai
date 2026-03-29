@@ -1,5 +1,5 @@
 .env
 __pycache__/
 *.pyc
-data/cache/
+data/cache/*.pkl\ndata/raw/*\n!data/raw/.gitkeep\ndata/processed/*\n!data/processed/.gitkeep
 
