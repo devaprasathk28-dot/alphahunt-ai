@@ -3,30 +3,43 @@ import pandas as pd
 import yfinance as yf
 from backend.scanner import scan_market, rank_opportunities
 from backend.signal_engine import generate_signal
-from backend.data_fetch import get_stock_data, get_unknown_stock_response
+from backend.data_fetch import get_stock_data, get_unknown_stock_response, get_live_data, get_stock_info
 from backend.stock_search import find_stock, get_suggestions, stock_db
 from backend.ai_engine import generate_ai_explanation, chat_with_ai
 from backend.backtest import backtest_stock
-from backend.auth import login, signup
+from backend.auth import login, signup, get_user, update_profile, load_user_chats, save_user_chats
 from backend.news_service import get_news, get_sentiment
 import plotly.express as px
 import io
-from backend.auth import login, signup, get_user, update_profile, load_user_chats, save_user_chats
 from backend.signal_engine import support_resistance, market_status, role_reversal
 from collections import Counter
 import plotly.graph_objects as go
 import datetime
 import time
 import requests
-from streamlit_autorefresh import st_autorefresh
 
 @st.cache_data(ttl=60)
 def get_chart_data(stock: str, period: str) -> pd.DataFrame:
-    """Cached chart data fetch."""
+    """Cached chart data fetch with intraday for 1d."""
     try:
-        return yf.Ticker(stock).history(period=period)
+        if period == "1d":
+            return get_live_data(stock)
+        ticker = yf.Ticker(stock)
+        return ticker.history(period=period)
     except:
         return pd.DataFrame()
+
+def _format_currency(value):
+    return f"₹{value:.2f}" if value is not None else 'N/A'
+
+def _format_market_cap(value):
+    return f"₹{value/1e9:.1f}B" if value is not None and value != 0 else 'N/A'
+
+def _format_pe_ratio(value):
+    return f"{value:.2f}" if value is not None else 'N/A'
+
+def _format_dividend_yield(value):
+    return f"{value:.2%}" if value is not None else 'N/A'
 
 st.set_page_config(page_title="ALPHAHUNT AI", layout="wide")
 
@@ -277,8 +290,6 @@ elif st.session_state.page == "dashboard":
         st.success("🔄 Refreshing analysis...")
         st.rerun()
 
-    st_autorefresh(interval=1200000, key="dashboard")  # Updated to 20 minutes
-
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Dashboard", "💼 Portfolio", "🤖 AI Assistant", "📈 Backtesting", "📡 Live Market"])
 
     # ============== TAB 1: DASHBOARD ==============
@@ -350,14 +361,31 @@ elif st.session_state.page == "dashboard":
             # 🔥 STEP 3.5 — SECTION DIVIDERS
             st.markdown("---")
 
+            # Full stock details in Dashboard
+            info = get_stock_info(stock_id)
+            
+            with st.expander("📊 Full Stock Details"):
+                st.write(f"""
+**Open:** {_format_currency(info.get('open'))}  
+**High:** {_format_currency(info.get('high'))}  
+**Low:** {_format_currency(info.get('low'))}  
+**Market Cap:** {_format_market_cap(info.get('market_cap'))}
+**P/E Ratio:** {_format_pe_ratio(info.get('pe'))}
+**52W High:** {_format_currency(info.get('52_high'))}  
+**52W Low:** {_format_currency(info.get('52_low'))}  
+**Dividend Yield:** {_format_dividend_yield(info.get('dividend'))}  
+**Last Dividend:** {_format_currency(info.get('div_amt'))}
+                """)
+
             # Time period selector
             period_options = ["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "max"]
             selected_period = st.selectbox("Select Time Period", period_options, index=1, key=f"period_{stock_id}")
 
 
+
             try:
                 data_chart = get_chart_data(stock_id, selected_period)
-                if not data_chart.empty:
+                if isinstance(data_chart, pd.DataFrame) and not data_chart.empty:
                     fig = go.Figure()
 
                     fig.add_trace(go.Scatter(x=data_chart.index, y=data_chart['Close'], mode='lines', name='Close Price', line=dict(color='blue')))
@@ -375,8 +403,7 @@ elif st.session_state.page == "dashboard":
                     )
                     st.plotly_chart(fig, use_container_width=True)
                 else:
-                    print(f"No chart data for {stock_id} ({selected_period}): empty dataframe") 
-                    st.warning(f"Unable to fetch chart data for {stock_id}")
+                    st.warning(f"No chart data for {stock_id} ({selected_period})")
             except Exception as e:
                 st.error(f"Error fetching chart for {stock_id}: {str(e)}")
 
@@ -417,9 +444,9 @@ elif st.session_state.page == "dashboard":
                             continue
                         
                         st.write(f"**Price:** {df['Close'].iloc[-1]:.2f}")
-                        
-                        status = market_status(stock)
-                        st.write(f"**Market:** {status}")
+
+                        status_info = market_status(stock)
+                        st.write(f"🕒 **{status_info['status']}** | Exchange: {status_info['exchange']} | Hours: {status_info['hours']} | Next: {status_info['next_open']} ({status_info['local_time']})")
                         
                         signal = generate_signal(df)
                         st.success(f"Signal: {signal['signal']} | Reason: {signal['reason']}")
@@ -429,6 +456,22 @@ elif st.session_state.page == "dashboard":
                         
                         reversal = role_reversal(df['Close'].iloc[-1], support, resistance)
                         st.write(f"**Role Reversal:** {reversal}")
+
+                        # Full stock details in Portfolio
+                        info = get_stock_info(stock)
+                        with st.expander("📊 Full Stock Details"):
+                            st.write(f"""
+**Open:** {_format_currency(info.get('open'))}  
+**High:** {_format_currency(info.get('high'))}  
+**Low:** {_format_currency(info.get('low'))}  
+**Market Cap:** {_format_market_cap(info.get('market_cap'))}  
+**P/E Ratio:** {_format_pe_ratio(info.get('pe'))}  
+**52W High:** {_format_currency(info.get('52_high'))}  
+**52W Low:** {_format_currency(info.get('52_low'))}  
+**Dividend Yield:** {_format_dividend_yield(info.get('dividend'))}  
+**Last Dividend:** {_format_currency(info.get('div_amt'))}
+                            """)
+
                     
                     # Update sector map for risk analysis
                     sector = st.session_state.sector_map.get(stock, "Unknown")
@@ -721,7 +764,26 @@ Reason: {r['reason']}
                             st.error(f"{ticker}: No data available")
                             continue
                         
-                        st.write(f"**Price:** {df['Close'].iloc[-1]:.2f}")
+                        # Market-aware live price
+                        status_info = market_status(ticker)
+                        if status_info['is_open']:
+                            live_df = get_live_data(ticker)
+                            if not live_df.empty and len(live_df) > 1:
+                                latest = live_df["Close"].iloc[-1]
+                                prev = live_df["Close"].iloc[-2]
+                                change = latest - prev
+                                percent = (change / prev) * 100
+                                st.metric(
+                                    label=f"{ticker}",
+                                    value=f"{latest:.2f}",
+                                    delta=f"{change:.2f} ({percent:.2f}%)"
+                                )
+                            else:
+                                latest = df["Close"].iloc[-1]
+                                st.metric(label=f"{ticker}", value=f"{latest:.2f}")
+                        else:
+                            st.warning(f"🔴 Market closed for {ticker}. Live price updates paused. Using last known: {df['Close'].iloc[-1]:.2f} | Next open: {status_info['next_open']}")
+                            st.metric(label=f"{ticker}", value=f"{df['Close'].iloc[-1]:.2f}", delta=None)
                         
                         signal = generate_signal(df)
                         st.success(f"**Signal:** {signal['signal']} ({signal['confidence']})")
@@ -734,18 +796,44 @@ Reason: {r['reason']}
                         price = df['Close'].iloc[-1]
                         reversal = role_reversal(price, support, resistance)
                         st.write(f"**Role Reversal:** {reversal}")
+
+                        # Enhanced market status
+                        st.markdown(f"**🕒 {status_info['status']}**  |  **{status_info['exchange']}**  |  Hours: **{status_info['hours']}**  |  Next: **{status_info['next_open']}**")
+
+# Full stock details (enhanced)
+                        info = get_stock_info(ticker)
+                        with st.expander("📊 Full Stock Details"):
+                            st.write(f"""
+**Open:** {_format_currency(info.get('open'))}  
+**High:** {_format_currency(info.get('high'))}  
+**Low:** {_format_currency(info.get('low'))}  
+**Market Cap:** {_format_market_cap(info.get('market_cap'))}
+**P/E Ratio:** {_format_pe_ratio(info.get('pe'))}
+**52W High:** {_format_currency(info.get('52_high'))}  
+**52W Low:** {_format_currency(info.get('52_low'))}  
+**Dividend Yield:** {_format_dividend_yield(info.get('dividend'))}  
+**Last Dividend:** {_format_currency(info.get('div_amt'))}
+                            """)
+
+                        # Manual time interval selector for live stocks chart
+                        period_options = ["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "max"]
+                        selected_period = st.selectbox("Select Chart Period", period_options, index=1, key=f"live_period_{ticker}")
+
+                        # Market-aware chart (live 1d only when open)
+                        if status_info['is_open'] or selected_period != "1d":
+                            chart_data = get_chart_data(ticker, selected_period)
+                        else:
+                            chart_data = get_stock_data(ticker)  # Historical fallback for 1d when closed
+                            st.info("📊 Showing historical chart (live 1d unavailable outside market hours)")
                         
-                        status = market_status(ticker)
-                        st.write(f"**Market Status:** {status}")
-                        
-                        # Chart
-                        chart_data = get_chart_data(ticker, "5d")
-                        if not chart_data.empty:
+                        if isinstance(chart_data, pd.DataFrame) and not chart_data.empty:
                             fig = go.Figure()
                             fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['Close'], mode='lines', name='Close'))
                             fig.add_hline(y=support, line_dash="dash", line_color="green", annotation_text="Support")
                             fig.add_hline(y=resistance, line_dash="dash", line_color="red", annotation_text="Resistance")
-                            fig.update_layout(title=f"{ticker} Chart", height=300)
+                            fig.update_layout(title=f"{ticker} Chart ({selected_period}){' - LIVE' if status_info['is_open'] and selected_period == '1d' else ''}", height=300)
                             st.plotly_chart(fig, use_container_width=True)
+                        else:
+                            st.warning("No chart data available")
                         
                         st.markdown("---")
